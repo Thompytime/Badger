@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BadgeFinder FC</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --good: #22c55e;
+      --warn: #f59e0b;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: white;
+    }
+
+    .panel {
+      padding: 16px;
+      display: grid;
+      gap: 10px;
+      background: linear-gradient(135deg, #111827, #020617);
+      border-bottom: 1px solid rgba(255,255,255,0.12);
+    }
+
+    .top-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: -0.04em;
+    }
+
+    #team {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 800;
+    }
+
+    #feedback, #status {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .badge {
+      width: 78px;
+      height: 90px;
+      clip-path: polygon(50% 0%, 92% 13%, 82% 78%, 50% 100%, 18% 78%, 8% 13%);
+      display: grid;
+      place-items: center;
+      font-weight: 900;
+      color: #0f172a;
+      box-shadow: 0 16px 40px rgba(0,0,0,0.35);
+      border: 3px solid white;
+    }
+
+    .game-card {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      padding: 9px 13px;
+      border-radius: 999px;
+      border: 0;
+      cursor: pointer;
+      font-weight: 750;
+      background: white;
+      color: #0f172a;
+    }
+
+    button.primary { background: var(--accent); color: #082f49; }
+    button.warning { background: var(--warn); color: #451a03; }
+    button.good { background: var(--good); color: #052e16; }
+
+    #map {
+      height: calc(100vh - 210px);
+      min-height: 480px;
+      background: #1e293b;
+    }
+
+    .stats {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .stat {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px;
+      padding: 8px 10px;
+      min-width: 110px;
+    }
+
+    .stat span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 18px;
+    }
+
+    .leaflet-container {
+      font-family: inherit;
+    }
+
+    /* During guessing, make any remaining raster label detail less readable. */
+    .hide-labels .leaflet-tile-pane {
+      filter: saturate(0.45) contrast(0.75) brightness(0.9) blur(0.35px);
+    }
+
+    .custom-pin {
+      background: transparent;
+      border: 0;
+    }
+
+    @media (max-width: 700px) {
+      #map { height: calc(100vh - 270px); }
+      h1 { font-size: 24px; }
+      #team { font-size: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <div class="top-row">
+      <div>
+        <h1>BadgeFinder FC</h1>
+        <p id="status">Guess the stadium location. Labels unlock after you win or run out of guesses.</p>
+      </div>
+      <div class="controls">
+        <button onclick="showHint()">Hint</button>
+        <button class="warning" onclick="reveal(true)">Give up</button>
+        <button class="primary" onclick="next()">Next</button>
+      </div>
+    </div>
+
+    <div class="game-card">
+      <div id="badge" class="badge">FC</div>
+      <div>
+        <p id="team"></p>
+        <p id="feedback">Click the unreadable map to guess.</p>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><span>Guesses</span><strong id="guesses">0 / 6</strong></div>
+      <div class="stat"><span>Best distance</span><strong id="best">—</strong></div>
+      <div class="stat"><span>Map mode</span><strong id="mapMode">Guessing</strong></div>
+    </div>
+  </div>
+
+  <div id="map" class="hide-labels"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const MAX_GUESSES = 6;
+    const WIN_DISTANCE_KM = 5;
+
+    const TEAMS = [
+      {
+        name: "North London Cannons",
+        hint: "A red club from north London",
+        city: "London, England",
+        stadium: "Emirates Stadium",
+        lat: 51.5549,
+        lng: -0.1084,
+        badge: "NLC",
+        colours: ["#d71920", "#ffffff"]
+      },
+      {
+        name: "Catalan Crowns",
+        hint: "A giant from Catalonia",
+        city: "Barcelona, Spain",
+        stadium: "Camp Nou",
+        lat: 41.3809,
+        lng: 2.1228,
+        badge: "CC",
+        colours: ["#004d98", "#a50044"]
+      },
+      {
+        name: "Bavarian Stars",
+        hint: "A red powerhouse in Bavaria",
+        city: "Munich, Germany",
+        stadium: "Allianz Arena",
+        lat: 48.2188,
+        lng: 11.6247,
+        badge: "BS",
+        colours: ["#dc052d", "#ffffff"]
+      },
+      {
+        name: "Milan Serpents",
+        hint: "Blue and black from northern Italy",
+        city: "Milan, Italy",
+        stadium: "San Siro",
+        lat: 45.4781,
+        lng: 9.1239,
+        badge: "MS",
+        colours: ["#010e80", "#000000"]
+      },
+      {
+        name: "Lisbon Eagles",
+        hint: "A red club near the Atlantic",
+        city: "Lisbon, Portugal",
+        stadium: "Estádio da Luz",
+        lat: 38.7528,
+        lng: -9.1847,
+        badge: "LE",
+        colours: ["#e00000", "#ffd700"]
+      },
+      {
+        name: "Istanbul Lions",
+        hint: "A yellow-red giant straddling continents",
+        city: "Istanbul, Türkiye",
+        stadium: "Rams Park",
+        lat: 41.1033,
+        lng: 28.9906,
+        badge: "IL",
+        colours: ["#fdb912", "#a90432"]
+      },
+      {
+        name: "Buenos Aires River",
+        hint: "A white shirt with a red sash",
+        city: "Buenos Aires, Argentina",
+        stadium: "Estadio Mâs Monumental",
+        lat: -34.5453,
+        lng: -58.4498,
+        badge: "BAR",
+        colours: ["#ffffff", "#e30613"]
+      },
+      {
+        name: "Rio Flames",
+        hint: "Red and black by Guanabara Bay",
+        city: "Rio de Janeiro, Brazil",
+        stadium: "Maracanã",
+        lat: -22.9122,
+        lng: -43.2302,
+        badge: "RF",
+        colours: ["#c40013", "#111111"]
+      },
+      {
+        name: "Tokyo Cranes",
+        hint: "A Japanese capital club",
+        city: "Tokyo, Japan",
+        stadium: "Ajinomoto Stadium",
+        lat: 35.6642,
+        lng: 139.527,
+        badge: "TC",
+        colours: ["#004ea2", "#e60012"]
+      },
+      {
+        name: "Cairo Suns",
+        hint: "A historic red club on the Nile",
+        city: "Cairo, Egypt",
+        stadium: "Cairo International Stadium",
+        lat: 30.0691,
+        lng: 31.3123,
+        badge: "CS",
+        colours: ["#d00000", "#f6c445"]
+      }
+    ];
+
+    let index = dailyIndex();
+    let guesses = [];
+    let bestDistance = Infinity;
+    let solved = false;
+    let targetMarker = null;
+    let line = null;
+    let markers = [];
+
+    const map = L.map("map", {
+      worldCopyJump: true,
+      zoomControl: true
+    }).setView([20, 0], 2);
+
+    // Label-light base map for guessing.
+    // CartoDB's no-label layer makes zooming in far less revealing than standard OSM.
+    const guessingLayer = L.tileLayer(
+      "https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png",
+      {
+        attribution: "&copy; OpenStreetMap contributors &copy; CARTO",
+        subdomains: "abcd",
+        maxZoom: 20
+      }
+    );
+
+    // Normal labelled map shown only after the answer is known.
+    const revealedLayer = L.tileLayer(
+      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      {
+        attribution: "&copy; OpenStreetMap contributors",
+        maxZoom: 19
+      }
+    );
+
+    guessingLayer.addTo(map);
+
+    const guessIcon = makeIcon("?", "#2563eb");
+    const targetIcon = makeIcon("⚽", "#16a34a");
+
+    map.on("click", function(e) {
+      if (solved) return;
+
+      const t = TEAMS[index];
+      const guess = { lat: e.latlng.lat, lng: e.latlng.lng };
+      const d = distance(guess, t);
+
+      guesses.push({ ...guess, distance: d });
+      bestDistance = Math.min(bestDistance, d);
+
+      const marker = L.marker([guess.lat, guess.lng], { icon: guessIcon })
+        .addTo(map)
+        .bindPopup(`Guess ${guesses.length}: ${d.toFixed(1)} km away`);
+      markers.push(marker);
+
+      if (line) map.removeLayer(line);
+      line = L.polyline(
+        [
+          [guess.lat, guess.lng],
+          [t.lat, t.lng]
+        ],
+        { color: "#38bdf8", weight: 3, opacity: 0.35, dashArray: "8 10" }
+      ).addTo(map);
+
+      if (d <= WIN_DISTANCE_KM) {
+        document.getElementById("feedback").innerText =
+          `Correct — ${d.toFixed(1)} km away. ${t.stadium}, ${t.city}.`;
+        reveal(false);
+      } else if (guesses.length >= MAX_GUESSES) {
+        document.getElementById("feedback").innerText =
+          `Out of guesses. Best was ${bestDistance.toFixed(1)} km.`;
+        reveal(false);
+      } else {
+        document.getElementById("feedback").innerText =
+          `${d.toFixed(1)} km away. ${MAX_GUESSES - guesses.length} guesses left.`;
+      }
+
+      updateStats();
+    });
+
+    function dailyIndex() {
+      const now = new Date();
+      const key = `${now.getUTCFullYear()}-${now.getUTCMonth() + 1}-${now.getUTCDate()}`;
+      let hash = 0;
+      for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+      return hash % TEAMS.length;
+    }
+
+    function setTeam() {
+      const t = TEAMS[index];
+
+      document.getElementById("team").innerText = t.name;
+      document.getElementById("feedback").innerText = "Click the unreadable map to guess.";
+      document.getElementById("badge").innerText = t.badge;
+      document.getElementById("badge").style.background =
+        `linear-gradient(135deg, ${t.colours[0]} 0 50%, ${t.colours[1]} 50% 100%)`;
+
+      updateStats();
+      lockMapLabels();
+    }
+
+    function showHint() {
+      const t = TEAMS[index];
+      document.getElementById("feedback").innerText = `Hint: ${t.hint}`;
+    }
+
+    function reveal(manual) {
+      const t = TEAMS[index];
+
+      solved = true;
+      unlockMapLabels();
+
+      if (targetMarker) map.removeLayer(targetMarker);
+      targetMarker = L.marker([t.lat, t.lng], { icon: targetIcon })
+        .addTo(map)
+        .bindPopup(`<strong>${t.stadium}</strong><br>${t.city}`)
+        .openPopup();
+
+      if (line) {
+        line.setStyle({ opacity: 0.9, dashArray: null });
+      }
+
+      map.setView([t.lat, t.lng], 12);
+
+      if (manual) {
+        document.getElementById("feedback").innerText = `${t.stadium}, ${t.city}.`;
+      }
+
+      updateStats();
+    }
+
+    function next() {
+      index = (index + 1) % TEAMS.length;
+      guesses = [];
+      bestDistance = Infinity;
+      solved = false;
+
+      markers.forEach(marker => map.removeLayer(marker));
+      markers = [];
+
+      if (targetMarker) {
+        map.removeLayer(targetMarker);
+        targetMarker = null;
+      }
+
+      if (line) {
+        map.removeLayer(line);
+        line = null;
+      }
+
+      map.setView([20, 0], 2);
+      setTeam();
+    }
+
+    function lockMapLabels() {
+      if (map.hasLayer(revealedLayer)) map.removeLayer(revealedLayer);
+      if (!map.hasLayer(guessingLayer)) guessingLayer.addTo(map);
+      document.getElementById("map").classList.add("hide-labels");
+      document.getElementById("mapMode").innerText = "Guessing";
+      document.getElementById("status").innerText =
+        "Guess the stadium location. Labels unlock after you win or run out of guesses.";
+    }
+
+    function unlockMapLabels() {
+      if (map.hasLayer(guessingLayer)) map.removeLayer(guessingLayer);
+      if (!map.hasLayer(revealedLayer)) revealedLayer.addTo(map);
+      document.getElementById("map").classList.remove("hide-labels");
+      document.getElementById("mapMode").innerText = "Revealed";
+      document.getElementById("status").innerText =
+        "Answer revealed. The normal readable map is now unlocked.";
+    }
+
+    function updateStats() {
+      document.getElementById("guesses").innerText = `${guesses.length} / ${MAX_GUESSES}`;
+      document.getElementById("best").innerText =
+        Number.isFinite(bestDistance) ? `${bestDistance.toFixed(1)} km` : "—";
+    }
+
+    function distance(a, b) {
+      const R = 6371;
+      const dLat = (b.lat - a.lat) * Math.PI / 180;
+      const dLng = (b.lng - a.lng) * Math.PI / 180;
+      const lat1 = a.lat * Math.PI / 180;
+      const lat2 = b.lat * Math.PI / 180;
+      const x =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+    }
+
+    function makeIcon(label, colour) {
+      return L.divIcon({
+        className: "custom-pin",
+        html: `<div style="background:${colour};color:white;border:2px solid white;border-radius:999px;width:34px;height:34px;display:flex;align-items:center;justify-content:center;font-weight:900;box-shadow:0 8px 20px rgba(0,0,0,.35);">${label}</div>`,
+        iconSize: [34, 34],
+        iconAnchor: [17, 17]
+      });
+    }
+
+    // Basic tests
+    console.assert(distance({ lat: 0, lng: 0 }, { lat: 0, lng: 0 }) < 0.001, "distance self test failed");
+    console.assert(TEAMS.length >= 10, "should have at least 10 teams");
+    console.assert(MAX_GUESSES > 0, "max guesses should be positive");
+    console.assert(WIN_DISTANCE_KM > 0, "win distance should be positive");
+
+    setTeam();
+  </script>
+</body>
+</html>
